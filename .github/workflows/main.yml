@@ -1,0 +1,99 @@
+name: Android Multi-Camera Studio CI Build
+
+on:
+  push:
+    branches: [ "main", "master", "develop" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build Debug & Release APK + Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Clean Any Unverified Wrapper JARs Before Gradle Setup
+        run: |
+          find . -name "gradle-wrapper.jar" -type f -delete || true
+
+      - name: 3. Setup JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 4. Setup Android SDK (Skip Deprecated 'tools' Package)
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: 5. Install Required Android SDK Packages (API 34 & Build-Tools 34.0.0)
+        run: |
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER=$(find "${ANDROID_HOME}/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)
+          fi
+          yes | "$SDKMANAGER" --licenses || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: 6. Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+          validate-wrappers: false
+
+      - name: 7. Locate Project Directory, Bootstrap Wrapper, Test & Build APKs
+        run: |
+          SETTINGS_FILE=$(find . -maxdepth 3 -name "settings.gradle.kts" | head -n 1)
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "Error: settings.gradle.kts not found in repository!"
+            exit 1
+          fi
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+          echo "Detected Android Studio project at: $PROJECT_DIR"
+          cd "$PROJECT_DIR"
+
+          # Ensure Media3 UnstableApi OptIn & Guava/Futures are configured even on older uploaded folders
+          RTSP_FILE="app/src/main/java/com/obsidiancast/studio/network/RtspNetworkClient.kt"
+          if [ -f "$RTSP_FILE" ] && ! grep -q "UnstableApi" "$RTSP_FILE"; then
+            sed -i 's/import androidx.media3.common.MediaItem/import androidx.annotation.OptIn\nimport androidx.media3.common.MediaItem\nimport androidx.media3.common.util.UnstableApi/' "$RTSP_FILE"
+            sed -i 's/fun createLowLatencyPlayer/@OptIn(UnstableApi::class)\n    fun createLowLatencyPlayer/' "$RTSP_FILE"
+          fi
+
+          if [ -f "app/build.gradle.kts" ]; then
+            sed -i 's/isMinifyEnabled = true/isMinifyEnabled = false/g' app/build.gradle.kts
+            sed -i 's/isShrinkResources = true/isShrinkResources = false/g' app/build.gradle.kts
+            sed -i '/RootEncoder/d' app/build.gradle.kts
+            if ! grep -q "com.google.guava:guava" app/build.gradle.kts; then
+              sed -i 's/dependencies {/dependencies {\n    implementation("com.google.guava:guava:32.1.3-android")\n    implementation("androidx.concurrent:concurrent-futures-ktx:1.2.0")/' app/build.gradle.kts
+            fi
+          fi
+
+          # Generate official Gradle 8.7 wrapper
+          gradle wrapper --gradle-version 8.7
+          chmod +x ./gradlew
+
+          # Run Unit Tests & Compile Debug + Release APKs
+          ./gradlew testDebugUnitTest --stacktrace
+          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleRelease --stacktrace
+
+      - name: 8. Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ObsidianCast-Debug-APK
+          path: |
+            **/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: 9. Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ObsidianCast-Release-APK
+          path: |
+            **/app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
