@@ -57,6 +57,13 @@ jobs:
           echo "Detected Android Studio project at: $PROJECT_DIR"
           cd "$PROJECT_DIR"
 
+          # Fix themes.xml attribute namespace colon if building from older uploaded folder
+          if [ -f "app/src/main/res/values/themes.xml" ]; then
+            sed -i 's/android\.statusBarColor/android:statusBarColor/g' app/src/main/res/values/themes.xml
+            sed -i 's/android\.navigationBarColor/android:navigationBarColor/g' app/src/main/res/values/themes.xml
+            sed -i 's/android\.windowBackground/android:windowBackground/g' app/src/main/res/values/themes.xml
+          fi
+
           # Ensure Media3 UnstableApi OptIn & Guava/Futures are configured even on older uploaded folders
           RTSP_FILE="app/src/main/java/com/obsidiancast/studio/network/RtspNetworkClient.kt"
           if [ -f "$RTSP_FILE" ] && ! grep -q "UnstableApi" "$RTSP_FILE"; then
